@@ -155,7 +155,15 @@ Stores the buffer in `swamp--last-result-buffer' and pops to it."
       (setq tabulated-list-format columns)
       (setq tabulated-list-entries rows)
       (when keymap
-        (use-local-map (make-composed-keymap keymap tabulated-list-mode-map)))
+        (use-local-map (make-composed-keymap keymap tabulated-list-mode-map))
+        ;; evil-mode intercept maps sit above the local map in precedence.
+        ;; Bind any keys from KEYMAP into the evil normal-state local map so
+        ;; they fire in evil sessions without making evil a hard dependency.
+        (when (bound-and-true-p evil-mode)
+          (map-keymap
+           (lambda (event def)
+             (evil-local-set-key 'normal (vector event) def))
+           keymap)))
       (tabulated-list-init-header)
       (tabulated-list-print))
     (setq swamp--last-result-buffer buf)
