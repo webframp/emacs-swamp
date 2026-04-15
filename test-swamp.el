@@ -45,6 +45,7 @@
                  swamp--completing-read-workflow
                  swamp--display-table
                  swamp--display-detail
+                 swamp--display-data-artifact
                  swamp--propertize-status
                  swamp--status-face))
     (should (fboundp sym))))
@@ -255,6 +256,84 @@
   "All three swamp status faces are defined."
   (dolist (face '(swamp-status-succeeded swamp-status-failed swamp-status-running))
     (should (facep face))))
+
+;;; ---------------------------------------------------------------------------
+;;; 13. swamp-data-query non-interactive end-to-end
+;;; ---------------------------------------------------------------------------
+
+(defvar swamp-test--sample-artifact
+  '((id . "abc-123")
+    (name . "my-artifact")
+    (version . 1)
+    (createdAt . "2026-04-15T00:00:00Z")
+    (modelName . "aws-ec2")
+    (modelType . "@swamp/aws/ec2")
+    (specName . "instance")
+    (dataType . "resource")
+    (contentType . "application/json")
+    (size . 4096)
+    (lifetime . "30d")
+    (ownerType . "model-method")
+    (workflowName . "my-workflow")
+    (stepName . "gather-instances")
+    (tags . ((type . "resource") (aws . "true"))))
+  "Canned artifact alist used in data-query tests.")
+
+(ert-deftest swamp-data-query-creates-table-buffer ()
+  "swamp-data-query renders a tabulated-list buffer without user interaction."
+  (let ((buf-name "*swamp-data*"))
+    (when (get-buffer buf-name) (kill-buffer buf-name))
+    (cl-letf (((symbol-function 'swamp--run-json)
+               (lambda (_args)
+                 `((predicate . "true")
+                   (results . (,swamp-test--sample-artifact)))))
+              ((symbol-function 'read-string)
+               (lambda (_prompt &rest _) "true")))
+      (swamp-data-query))
+    (let ((buf (get-buffer buf-name)))
+      (should buf)
+      (with-current-buffer buf
+        (should (eq major-mode 'tabulated-list-mode))
+        ;; The artifact name should appear in the rendered table
+        (should (string-match-p "my-artifact" (buffer-string)))))
+    (kill-buffer buf-name)))
+
+(ert-deftest swamp-data-query-ret-opens-detail-buffer ()
+  "RET on a data query row opens a detail buffer for that artifact."
+  (let ((table-buf "*swamp-data*")
+        (detail-buf "*swamp-artifact:my-artifact*"))
+    (when (get-buffer table-buf)  (kill-buffer table-buf))
+    (when (get-buffer detail-buf) (kill-buffer detail-buf))
+    (cl-letf (((symbol-function 'swamp--run-json)
+               (lambda (_args)
+                 `((predicate . "true")
+                   (results . (,swamp-test--sample-artifact)))))
+              ((symbol-function 'read-string)
+               (lambda (_prompt &rest _) "true")))
+      (swamp-data-query))
+    ;; Move point to the first data row and invoke RET.
+    ;; In batch mode the header may occupy line 1 or line 2 depending on
+    ;; whether tabulated-list-init-header ran; search for the artifact name
+    ;; to land exactly on the right row.
+    (with-current-buffer (get-buffer table-buf)
+      (goto-char (point-min))
+      (re-search-forward "my-artifact")
+      (beginning-of-line)
+      (call-interactively
+       (lookup-key (current-local-map) (kbd "RET"))))
+    ;; The detail buffer should now exist and be in special-mode
+    (let ((buf (get-buffer detail-buf)))
+      (should buf)
+      (with-current-buffer buf
+        (should (eq major-mode 'special-mode))
+        (let ((content (buffer-string)))
+          (should (string-match-p "my-artifact"   content))
+          (should (string-match-p "aws-ec2"        content))
+          (should (string-match-p "my-workflow"    content))
+          (should (string-match-p "gather-instances" content))
+          (should (string-match-p "4096 bytes"     content)))))
+    (when (get-buffer table-buf)  (kill-buffer table-buf))
+    (when (get-buffer detail-buf) (kill-buffer detail-buf))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Run

@@ -499,25 +499,71 @@ Shows installed name@version on success; signals an error on failure."
 
 ;;;###autoload
 (defun swamp-data-query ()
-  "Run a CEL data query against swamp artifacts and display results."
+  "Run a CEL data query against swamp artifacts and display results.
+Results are shown in a tabulated-list buffer; RET opens a detail buffer
+for the artifact under point."
   (interactive)
   (let* ((expr    (read-string "CEL predicate: "))
          (data    (swamp--run-json (list "data" "query" expr)))
          (results (alist-get 'results data)))
     (unless results
       (user-error "No data results for predicate: %s" expr))
-    (let ((rows (mapcar (lambda (r)
-                          (list (alist-get 'id r "")
-                                (vector (or (alist-get 'name r) "")
-                                        (or (alist-get 'modelType r) "")
-                                        (or (alist-get 'dataType r) "")
-                                        (or (alist-get 'createdAt r) ""))))
-                        results)))
+    (let* ((keymap (make-sparse-keymap))
+           ;; Keep full artifact plists indexed by id for drill-down
+           (index  (let ((tbl (make-hash-table :test 'equal)))
+                     (dolist (r results tbl)
+                       (puthash (alist-get 'id r "") r tbl))))
+           (rows (mapcar (lambda (r)
+                           (list (alist-get 'id r "")
+                                 (vector (or (alist-get 'name r) "")
+                                         (or (alist-get 'modelType r) "")
+                                         (or (alist-get 'dataType r) "")
+                                         (or (alist-get 'createdAt r) ""))))
+                         results)))
+      (define-key keymap (kbd "RET")
+                  (lambda ()
+                    (interactive)
+                    (let* ((id  (tabulated-list-get-id))
+                           (artifact (gethash id index)))
+                      (if artifact
+                          (swamp--display-data-artifact artifact)
+                        (user-error "No artifact data for id: %s" id)))))
       (swamp--display-table
        "*swamp-data*"
        [("Name" 35 t) ("Model type" 30 t) ("Data type" 15 t) ("Created at" 30 t)]
        rows
-       nil))))
+       keymap))))
+
+(defun swamp--display-data-artifact (artifact)
+  "Display a detail buffer for a data ARTIFACT alist."
+  (let* ((name   (or (alist-get 'name artifact) ""))
+         (tags   (alist-get 'tags artifact))
+         (tag-lines (when tags
+                      (mapconcat (lambda (pair)
+                                   (format "  %-20s %s" (car pair) (cdr pair)))
+                                 tags "\n"))))
+    (swamp--display-detail
+     (format "*swamp-artifact:%s*" name)
+     (format "Artifact: %s" name)
+     (list
+      (list "ID"           (alist-get 'id artifact))
+      (list "Name"         name)
+      (list "Version"      (format "%s" (or (alist-get 'version artifact) "")))
+      (list "Model"        (alist-get 'modelName artifact))
+      (list "Model type"   (alist-get 'modelType artifact))
+      (list "Spec"         (alist-get 'specName artifact))
+      (list "Data type"    (alist-get 'dataType artifact))
+      (list "Content type" (alist-get 'contentType artifact))
+      (list "Size"         (let ((sz (alist-get 'size artifact)))
+                             (when sz (format "%d bytes" sz))))
+      (list "Lifetime"     (alist-get 'lifetime artifact))
+      (list "Owner type"   (alist-get 'ownerType artifact))
+      (list "Workflow"     (let ((wf (alist-get 'workflowName artifact)))
+                             (when (and wf (not (string-empty-p wf))) wf)))
+      (list "Step"         (let ((s (alist-get 'stepName artifact)))
+                             (when (and s (not (string-empty-p s))) s)))
+      (list "Created at"   (alist-get 'createdAt artifact))
+      (list "Tags"         tag-lines)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Summarize command
