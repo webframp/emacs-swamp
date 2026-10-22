@@ -59,11 +59,13 @@ Output files go to a scratch directory, bound in
                (setq i (1+ i))))
            (with-temp-file script
              (insert "#!/bin/sh\n"
-                     (format "printf '%%s\\037' \"$@\" >> %s\necho >> %s\n"
+                     (format "printf '%%s\\037' \"$@\" >> %s\necho >> %s\npwd >> %s\n"
                              (shell-quote-argument
                               (expand-file-name "calls" swamp-present-test--dir))
                              (shell-quote-argument
-                              (expand-file-name "calls" swamp-present-test--dir)))
+                              (expand-file-name "calls" swamp-present-test--dir))
+                             (shell-quote-argument
+                              (expand-file-name "cwds" swamp-present-test--dir)))
                      "case \"$*\" in\n" cases
                      "  *) echo unexpected >&2; exit 99;;\nesac\n"))
            (set-file-modes script #o755)
@@ -314,7 +316,7 @@ Output files go to a scratch directory, bound in
          (swamp-present-preview)
          (swamp-present-test--wait)))
       (should (equal opened
-                     (expand-file-name "swamp-present-talks-talk.html"
+                     (expand-file-name "talks/talk.html"
                                        swamp-present-output-directory)))
       (should (equal (with-temp-buffer (insert-file-contents opened)
                                        (buffer-string))
@@ -340,7 +342,7 @@ Output files go to a scratch directory, bound in
                        "--input" "name=talk-web" "--json")))
       (should (equal (nth 1 (nth 2 calls))
                      "query")))
-    (let ((pdf (expand-file-name "swamp-present-talks-talk-web.pdf"
+    (let ((pdf (expand-file-name "talks/talk-web.pdf"
                                  swamp-present-output-directory)))
       (should (equal (with-temp-buffer
                        (set-buffer-multibyte nil)
@@ -348,6 +350,85 @@ Output files go to a scratch directory, bound in
                          (insert-file-contents pdf))
                        (buffer-string))
                      "%PDF-1.7\n\377")))))
+
+(defun swamp-present-test--cwds ()
+  "Return the working directories the fake swamp ran in, in order."
+  (let ((file (expand-file-name "cwds" swamp-present-test--dir)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (split-string (buffer-string) "\n" t))))
+
+(ert-deftest swamp-present-chain-stays-in-the-source-repository ()
+  "Steps after the build use the source buffer's directory and repo.
+The fetch starts in a process sentinel, which runs in whatever buffer is
+current when the build ends."
+  (swamp-present-test--with-fake-swamp
+      `(("*build*" ,(swamp-present-test--build-json "talk") 0)
+        ("*html-talk*" "<html>deck</html>\n" 0))
+    (let ((elsewhere (make-temp-file "swamp-present-other-" t)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'browse-url-of-file) #'ignore))
+            (swamp-present-test--in-deck
+             (setq-local swamp-repo-dir "/repo-a")
+             (swamp-present-preview))
+            ;; Another buffer, in another directory, with no repo set.
+            (with-temp-buffer
+              (setq default-directory (file-name-as-directory elsewhere))
+              (swamp-present-test--wait)))
+        (delete-directory elsewhere t)))
+    (let ((dirs (swamp-present-test--cwds)))
+      (should (= (length dirs) 2))
+      (should (equal (car dirs) (cadr dirs))))
+    (dolist (call (swamp-present-test--calls))
+      (should (equal (last call 2) '("--repo-dir" "/repo-a"))))))
+
+(ert-deftest swamp-present-preview-files-never-collide ()
+  "Instance a-b with deck c and instance a with deck b-c get different files."
+  (let ((swamp-present-output-directory (make-temp-file "swamp-present-" t)))
+    (unwind-protect
+        (should-not (equal (swamp-present--output-file "a-b" "c" "html")
+                           (swamp-present--output-file "a" "b-c" "html")))
+      (delete-directory swamp-present-output-directory t))))
+
+(ert-deftest swamp-present-default-directory-is-made-private ()
+  "An existing default output directory is tightened to mode 700."
+  (let* ((user-emacs-directory (file-name-as-directory
+                                (make-temp-file "swamp-present-ued-" t)))
+         (swamp-present-output-directory nil)
+         (base (expand-file-name "swamp-present/" user-emacs-directory)))
+    (unwind-protect
+        (progn
+          (make-directory base)
+          (set-file-modes base #o755)
+          (swamp-present--output-file "talks" "talk" "html")
+          (should (= (file-modes base) #o700))
+          (should (= (file-modes (expand-file-name "talks" base)) #o700)))
+      (delete-directory user-emacs-directory t))))
+
+(ert-deftest swamp-present-missing-executable-leaks-no-buffers ()
+  "A swamp that cannot start leaves no hidden buffers behind."
+  (let ((swamp-executable "/nonexistent/swamp")
+        (before (length (buffer-list))))
+    (should-error (swamp-present--start '("model" "search") nil #'ignore)
+                  :type 'user-error)
+    (should (= (length (buffer-list)) before))))
+
+(ert-deftest swamp-present-write-keeps-unsaved-edits ()
+  "A preview buffer with unsaved changes is not reverted."
+  (let ((file (make-temp-file "swamp-present-" nil ".txt")))
+    (unwind-protect
+        (let ((buf (progn (with-temp-file file (insert "old"))
+                          (find-file-noselect file))))
+          (unwind-protect
+              (progn
+                (with-current-buffer buf (goto-char (point-max)) (insert " edits"))
+                (swamp-present-test--capturing-messages
+                 (swamp-present--write file "new"))
+                (should (equal (with-current-buffer buf (buffer-string))
+                               "old edits")))
+            (with-current-buffer buf (set-buffer-modified-p nil))
+            (kill-buffer buf)))
+      (delete-file file))))
 
 (ert-deftest swamp-present-write-reverts-a-visiting-buffer ()
   "Rewriting an open preview refreshes its buffer without asking."

@@ -130,10 +130,13 @@ stopped.
 - `swamp-present-name` sets the deck's name for one buffer, as a file-local
   variable, when two sources share a file name.
 - `swamp-present-output-directory` is where previews are written, as
-  `swamp-present-<instance>-<name>.html` and `.pdf`. The default is
-  `swamp-present/` under `user-emacs-directory`, created readable by you alone.
-  Each preview overwrites the last, so a browser tab only needs reloading, and
-  an open PDF buffer is refreshed in place.
+  `<instance>/<name>.html` and `.pdf`. The default is `swamp-present/` under
+  `user-emacs-directory`, kept readable by you alone; a directory you choose
+  should be private too. Each preview overwrites the last, so a browser tab
+  only needs reloading, and an open PDF buffer is refreshed in place unless it
+  has unsaved changes.
+- Each step runs against the repository the command started in, even if you
+  switch buffers while a build or PDF is in progress.
 - `swamp-present-deck`, `#+SWAMP_DECK:` and `swamp-present-name` must be plain
   names (letters, digits, `.`, `_`, `-`; deck names lowercase, at most 63
   characters); anything else is refused before swamp runs.

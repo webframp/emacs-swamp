@@ -77,10 +77,10 @@ An Org buffer can name another with a #+SWAMP_DECK: keyword."
 
 (defcustom swamp-present-output-directory nil
   "Directory for previewed HTML and PDF files.
-When nil, use \"swamp-present/\" under `user-emacs-directory', created
-readable by you alone.  Files are named after the deck instance and the
-deck, so each preview overwrites the last and a browser tab only needs
-reloading."
+When nil, use \"swamp-present/\" under `user-emacs-directory', kept
+readable by you alone.  A directory you set yourself should be private
+too.  Previews go to <directory>/<instance>/<deck>.html and .pdf, so
+each overwrites the last and a browser tab only needs reloading."
   :type '(choice (const :tag "Under user-emacs-directory" nil) directory)
   :group 'swamp-present)
 
@@ -168,20 +168,33 @@ no attributes."
   "Run swamp with ARGS asynchronously and call ON-EXIT when it ends.
 ON-EXIT gets the exit status, or `timed-out' or `cancelled' for a command
 that was stopped, then stdout and stderr.  With BINARY, stdout is read as
-raw bytes.  The command is stopped after `swamp-present-timeout' seconds."
-  (let* ((out (let ((buf (generate-new-buffer " *swamp-present-out*")))
+raw bytes.  The command is stopped after `swamp-present-timeout' seconds.
+
+ON-EXIT runs with the `default-directory' and `swamp-repo-dir' this call
+started with, whatever buffer is current when the command ends, so a
+command it starts in turn targets the same repository."
+  (unless (executable-find swamp-executable)
+    (user-error "Cannot run swamp: %s not found; set `swamp-executable'"
+                swamp-executable))
+  (let* ((dir default-directory)
+         (repo swamp-repo-dir)
+         (out (let ((buf (generate-new-buffer " *swamp-present-out*")))
                 ;; Before the process starts, so no output is decoded early.
                 (with-current-buffer buf (set-buffer-multibyte (not binary)))
                 buf))
          (err (generate-new-buffer " *swamp-present-err*"))
-         (proc (make-process
-                :name "swamp-present"
-                :buffer out
-                :stderr err
-                :coding (if binary 'binary 'utf-8)
-                :command (cons swamp-executable (swamp--command-args args))
-                :noquery t
-                :sentinel #'ignore))
+         (proc (condition-case e
+                   (make-process
+                    :name "swamp-present"
+                    :buffer out
+                    :stderr err
+                    :coding (if binary 'binary 'utf-8)
+                    :command (cons swamp-executable (swamp--command-args args))
+                    :noquery t
+                    :sentinel #'ignore)
+                 (error (kill-buffer out)
+                        (kill-buffer err)
+                        (signal (car e) (cdr e)))))
          (timer (when swamp-present-timeout
                   (run-at-time swamp-present-timeout nil
                                (lambda ()
@@ -198,9 +211,11 @@ raw bytes.  The command is stopped after `swamp-present-timeout' seconds."
                    (stderr (if (buffer-live-p err)
                                (with-current-buffer err (buffer-string))
                              "")))
-               (funcall on-exit
-                        (or (process-get p 'stopped) (process-exit-status p))
-                        stdout stderr))
+               (let ((default-directory dir)
+                     (swamp-repo-dir repo))
+                 (funcall on-exit
+                          (or (process-get p 'stopped) (process-exit-status p))
+                          stdout stderr)))
            (kill-buffer out)
            (when (buffer-live-p err) (kill-buffer err))))))
     proc))
@@ -249,26 +264,34 @@ binary files as base64, each with one trailing newline, which is removed."
              (t (funcall on-content content)))))))
 
 (defun swamp-present--output-file (deck name extension)
-  "Return the preview file for deck NAME of instance DECK with EXTENSION."
-  (let ((dir (file-name-as-directory
-              (or swamp-present-output-directory
-                  (locate-user-emacs-file "swamp-present/")))))
-    (unless (file-directory-p dir)
-      (with-file-modes #o700 (make-directory dir t)))
-    (expand-file-name (format "swamp-present-%s-%s.%s" deck name extension)
-                      dir)))
+  "Return the preview file for deck NAME of instance DECK with EXTENSION.
+Each instance has its own subdirectory, so no two decks share a file.  The
+default directory is kept readable by you alone, even if it already
+existed."
+  (let* ((base (file-name-as-directory
+                (expand-file-name
+                 (or swamp-present-output-directory
+                     (locate-user-emacs-file "swamp-present/")))))
+         (dir (file-name-as-directory (expand-file-name deck base))))
+    (with-file-modes #o700 (make-directory dir t))
+    (unless swamp-present-output-directory
+      (set-file-modes base #o700)
+      (set-file-modes dir #o700))
+    (expand-file-name (format "%s.%s" name extension) dir)))
 
 (defun swamp-present--write (file bytes)
   "Write unibyte BYTES to FILE and return the buffer visiting it, if any.
-A buffer already visiting FILE is reverted, so it shows the new content
-without asking."
+An unmodified buffer visiting FILE is reverted, so it shows the new
+content without asking.  A buffer with unsaved changes is left alone."
   (let ((coding-system-for-write 'binary))
     (with-temp-file file
       (set-buffer-multibyte nil)
       (insert bytes)))
   (let ((buf (find-buffer-visiting file)))
     (when buf
-      (with-current-buffer buf (revert-buffer t t t)))
+      (if (buffer-modified-p buf)
+          (message "%s has unsaved changes; not reloading it" (buffer-name buf))
+        (with-current-buffer buf (revert-buffer t t t))))
     buf))
 
 (defun swamp-present--report-build (deck record)
