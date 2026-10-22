@@ -27,9 +27,10 @@
 ;;   `swamp-present-preview'  build it and open it in a browser
 ;;   `swamp-present-outline'  list slides, notes coverage, missing images
 ;;   `swamp-present-pdf'      build it, print it to PDF and open the PDF
+;;   `swamp-present-cancel'   stop running swamp commands
 ;;
-;; With a prefix argument, build and preview make a self-contained deck
-;; that works offline.
+;; With a prefix argument, build, preview and PDF make a self-contained
+;; deck that works offline.
 ;;
 ;;; Code:
 
@@ -48,26 +49,51 @@
   :group 'swamp
   :prefix "swamp-present-")
 
+;; swamp model instance names and the extension's deck names.  Anything a
+;; buffer or file-local variable supplies is checked against these before it
+;; reaches swamp's command line, so it can never read as an option.
+(defconst swamp-present--instance-pattern
+  "\\`[A-Za-z0-9][A-Za-z0-9._-]*\\'"
+  "Pattern a deck model instance name must match.")
+
+(defconst swamp-present--name-pattern
+  "\\`[a-z0-9][a-z0-9-]\\{0,62\\}\\'"
+  "Pattern a deck name must match; the extension's DECK_NAME_PATTERN.")
+
+(defun swamp-present--instance-p (value)
+  "Return non-nil if VALUE is a valid deck model instance name."
+  (and (stringp value) (string-match-p swamp-present--instance-pattern value)))
+
+(defun swamp-present--name-p (value)
+  "Return non-nil if VALUE is a valid deck name."
+  (and (stringp value) (string-match-p swamp-present--name-pattern value)))
+
 (defcustom swamp-present-deck "talks"
   "Name of the @webframp/presentation/deck model instance to build with.
 An Org buffer can name another with a #+SWAMP_DECK: keyword."
   :type 'string
-  :safe #'stringp
+  :safe #'swamp-present--instance-p
   :group 'swamp-present)
 
 (defcustom swamp-present-output-directory nil
   "Directory for previewed HTML and PDF files.
-When nil, use the variable `temporary-file-directory'.  Files are named
-after the deck, so each preview overwrites the last and a browser tab can
-simply reload."
-  :type '(choice (const :tag "Temporary directory" nil) directory)
+When nil, use \"swamp-present/\" under `user-emacs-directory', created
+readable by you alone.  Files are named after the deck instance and the
+deck, so each preview overwrites the last and a browser tab only needs
+reloading."
+  :type '(choice (const :tag "Under user-emacs-directory" nil) directory)
+  :group 'swamp-present)
+
+(defcustom swamp-present-timeout 600
+  "Seconds before a swamp command started by swamp-present is stopped.
+nil means never."
+  :type '(choice (const :tag "Never" nil) natnum)
   :group 'swamp-present)
 
 (defvar-local swamp-present-name nil
   "Deck name for this buffer, or nil to let swamp derive it from the file.
 Set it as a file-local variable when two sources share a file name.")
-(put 'swamp-present-name 'safe-local-variable
-     (lambda (v) (and (stringp v) (string-match-p "\\`[a-z0-9][a-z0-9-]*\\'" v))))
+(put 'swamp-present-name 'safe-local-variable #'swamp-present--name-p)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Helpers
@@ -78,16 +104,20 @@ Set it as a file-local variable when two sources share a file name.")
 
 (defun swamp-present--deck ()
   "Return the deck instance for the current buffer."
-  (or (and (derived-mode-p 'org-mode)
-           (save-excursion
-             (save-restriction
-               (widen)
-               (goto-char (point-min))
-               (let ((case-fold-search t))
-                 (when (re-search-forward
-                        "^#\\+SWAMP_DECK:[ \t]*\\([^ \t\n]+\\)" nil t)
-                   (match-string-no-properties 1))))))
-      swamp-present-deck))
+  (let ((deck (or (and (derived-mode-p 'org-mode)
+                       (save-excursion
+                         (save-restriction
+                           (widen)
+                           (goto-char (point-min))
+                           (let ((case-fold-search t))
+                             (when (re-search-forward
+                                    "^#\\+SWAMP_DECK:[ \t]*\\([^ \t\n]+\\)"
+                                    nil t)
+                               (match-string-no-properties 1))))))
+                  swamp-present-deck)))
+    (unless (swamp-present--instance-p deck)
+      (user-error "Not a deck model instance name: %S" deck))
+    deck))
 
 (defun swamp-present--source ()
   "Return the current buffer's file, saving it first if it has changes."
@@ -96,6 +126,8 @@ Set it as a file-local variable when two sources share a file name.")
       (user-error "This buffer is not visiting a file"))
     (unless (string-match-p "\\.\\(org\\|md\\|markdown\\|mdown\\|mkd\\)\\'" file)
       (user-error "Not an Org or Markdown file: %s" file))
+    (when (and swamp-present-name (not (swamp-present--name-p swamp-present-name)))
+      (user-error "Not a deck name: %S" swamp-present-name))
     (when (and (buffer-modified-p)
                (y-or-n-p (format "Save %s before building? "
                                  (file-name-nondirectory file))))
@@ -132,72 +164,112 @@ no attributes."
       (json-parse-string text :object-type 'alist :array-type 'list)
     (error nil)))
 
+(defun swamp-present--start (args binary on-exit)
+  "Run swamp with ARGS asynchronously and call ON-EXIT when it ends.
+ON-EXIT gets the exit status, or `timed-out' or `cancelled' for a command
+that was stopped, then stdout and stderr.  With BINARY, stdout is read as
+raw bytes.  The command is stopped after `swamp-present-timeout' seconds."
+  (let* ((out (let ((buf (generate-new-buffer " *swamp-present-out*")))
+                ;; Before the process starts, so no output is decoded early.
+                (with-current-buffer buf (set-buffer-multibyte (not binary)))
+                buf))
+         (err (generate-new-buffer " *swamp-present-err*"))
+         (proc (make-process
+                :name "swamp-present"
+                :buffer out
+                :stderr err
+                :coding (if binary 'binary 'utf-8)
+                :command (cons swamp-executable (swamp--command-args args))
+                :noquery t
+                :sentinel #'ignore))
+         (timer (when swamp-present-timeout
+                  (run-at-time swamp-present-timeout nil
+                               (lambda ()
+                                 (when (process-live-p proc)
+                                   (process-put proc 'stopped 'timed-out)
+                                   (delete-process proc)))))))
+    (set-process-sentinel
+     proc
+     (lambda (p _event)
+       (unless (process-live-p p)
+         (when timer (cancel-timer timer))
+         (unwind-protect
+             (let ((stdout (with-current-buffer out (buffer-string)))
+                   (stderr (if (buffer-live-p err)
+                               (with-current-buffer err (buffer-string))
+                             "")))
+               (funcall on-exit
+                        (or (process-get p 'stopped) (process-exit-status p))
+                        stdout stderr))
+           (kill-buffer out)
+           (when (buffer-live-p err) (kill-buffer err))))))
+    proc))
+
+(defun swamp-present--fail (what exit stderr &optional result)
+  "Report that WHAT failed with EXIT, logging STDERR.
+RESULT is swamp's parsed JSON, if any; swamp prints some errors, such as
+an unknown model, as JSON on stderr instead."
+  (unless (string-empty-p stderr)
+    (swamp-present--log "%s" (string-trim-right stderr)))
+  (message "swamp: %s"
+           (cond ((eq exit 'timed-out)
+                  (format "%s timed out after %ds" what swamp-present-timeout))
+                 ((eq exit 'cancelled) (format "%s cancelled" what))
+                 ((alist-get 'error result))
+                 ((alist-get 'error (swamp-present--parse stderr)))
+                 (t (format "%s failed (exit %d); see %s"
+                            what exit swamp-present--log-buffer)))))
+
 (defun swamp-present--run (args on-success)
-  "Run swamp with ARGS asynchronously, then call ON-SUCCESS with its result.
+  "Run the swamp method in ARGS, then call ON-SUCCESS with its result.
 The result is swamp's parsed JSON.  A failure is reported in the echo area
 and its error output is kept in the log buffer."
-  (let ((out (generate-new-buffer " *swamp-present-out*"))
-        (err (generate-new-buffer " *swamp-present-err*")))
-    (make-process
-     :name "swamp-present"
-     :buffer out
-     :stderr err
-     :command (cons swamp-executable (swamp--command-args args))
-     :noquery t
-     :sentinel
-     (lambda (proc _event)
-       (unless (process-live-p proc)
-         (unwind-protect
-             (let* ((result (swamp-present--parse
-                             (with-current-buffer out (buffer-string))))
-                    (status (alist-get 'status result))
-                    (stderr (with-current-buffer err (buffer-string))))
-               (if (and (= (process-exit-status proc) 0)
-                        (equal status "succeeded"))
-                   (funcall on-success result)
-                 (swamp-present--log "%s" stderr)
-                 (message "swamp: %s"
-                          (or (alist-get 'error result)
-                              (format "%s failed (exit %d); see %s"
-                                      (nth 4 args)
-                                      (process-exit-status proc)
-                                      swamp-present--log-buffer)))))
-           (kill-buffer out)
-           (when (buffer-live-p err) (kill-buffer err))))))))
+  (swamp-present--start
+   args nil
+   (lambda (exit stdout stderr)
+     (let ((result (swamp-present--parse stdout)))
+       (if (and (eq exit 0) (equal (alist-get 'status result) "succeeded"))
+           (funcall on-success result)
+         (swamp-present--fail (nth 4 args) exit stderr result))))))
 
-(defun swamp-present--fetch (deck data-name)
-  "Return the content of DECK's file DATA-NAME as a unibyte string.
-swamp prints text files as they are and binary files as base64, each with
-one trailing newline."
-  (with-temp-buffer
-    (set-buffer-multibyte nil)
-    (let* ((coding-system-for-read 'binary)
-           (predicate (format "model(%S) && name == %S" deck data-name))
-           (exit (apply #'call-process swamp-executable nil '(t nil) nil
-                        (swamp--command-args
-                         (list "data" "query" predicate
-                               "--select" "content")))))
-      (unless (= exit 0)
-        (user-error "Swamp could not read %s from %s" data-name deck))
-      (goto-char (point-max))
-      (when (eq (char-before) ?\n) (delete-char -1))
-      (when (= (buffer-size) 0)
-        (user-error "Deck %s has no %s yet" deck data-name))
-      (buffer-string))))
+(defun swamp-present--fetch (deck data-name on-content)
+  "Read DECK's file DATA-NAME, then call ON-CONTENT with it.
+The content is a unibyte string.  swamp prints text files as they are and
+binary files as base64, each with one trailing newline, which is removed."
+  (swamp-present--start
+   (list "data" "query" (format "model(%S) && name == %S" deck data-name)
+         "--select" "content")
+   t
+   (lambda (exit stdout stderr)
+     (let ((content (string-remove-suffix "\n" stdout)))
+       (cond ((not (eq exit 0))
+              (swamp-present--fail (format "reading %s" data-name) exit stderr))
+             ((string-empty-p content)
+              (message "swamp: %s has no %s yet" deck data-name))
+             (t (funcall on-content content)))))))
 
-(defun swamp-present--output-file (name extension)
-  "Return the preview file for deck NAME with EXTENSION."
-  (expand-file-name (format "swamp-present-%s.%s" name extension)
-                    (or swamp-present-output-directory
-                        temporary-file-directory)))
+(defun swamp-present--output-file (deck name extension)
+  "Return the preview file for deck NAME of instance DECK with EXTENSION."
+  (let ((dir (file-name-as-directory
+              (or swamp-present-output-directory
+                  (locate-user-emacs-file "swamp-present/")))))
+    (unless (file-directory-p dir)
+      (with-file-modes #o700 (make-directory dir t)))
+    (expand-file-name (format "swamp-present-%s-%s.%s" deck name extension)
+                      dir)))
 
 (defun swamp-present--write (file bytes)
-  "Write unibyte BYTES to FILE."
+  "Write unibyte BYTES to FILE and return the buffer visiting it, if any.
+A buffer already visiting FILE is reverted, so it shows the new content
+without asking."
   (let ((coding-system-for-write 'binary))
     (with-temp-file file
       (set-buffer-multibyte nil)
       (insert bytes)))
-  file)
+  (let ((buf (find-buffer-visiting file)))
+    (when buf
+      (with-current-buffer buf (revert-buffer t t t)))
+    buf))
 
 (defun swamp-present--report-build (deck record)
   "Echo the outcome of a build RECORD of DECK and log its warnings."
@@ -229,6 +301,27 @@ SELF-CONTAINED inlines every reveal.js file."
          (swamp-present--report-build deck record)
          (when then (funcall then deck record)))))))
 
+(defun swamp-present--print (deck name)
+  "Print DECK's deck NAME to PDF and open it.
+The deck is named, not its source: export_pdf takes one or the other, and
+the name is the one the build just recorded."
+  (message "Printing %s..." name)
+  (swamp-present--run
+   (list "model" "method" "run" deck "export_pdf"
+         "--input" (concat "name=" name) "--json")
+   (lambda (result)
+     (let ((pdf (swamp-present--record result)))
+       (swamp-present--fetch
+        deck (format "deck-%s-pdf" name)
+        (lambda (encoded)
+          (let* ((file (swamp-present--output-file deck name "pdf"))
+                 (buf (swamp-present--write
+                       file (base64-decode-string encoded))))
+            (message "%s: %d pages%s" name
+                     (alist-get 'pages (alist-get 'pdf pdf))
+                     (if (eq (alist-get 'unchanged pdf) t) " (unchanged)" ""))
+            (pop-to-buffer (or buf (find-file-noselect file))))))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Commands
 ;;; ---------------------------------------------------------------------------
@@ -249,38 +342,24 @@ With prefix argument SELF-CONTAINED, build a deck that works offline."
   (swamp-present--build
    self-contained
    (lambda (deck record)
-     (let* ((name (alist-get 'name record))
-            (file (swamp-present--write
-                   (swamp-present--output-file name "html")
-                   (swamp-present--fetch deck (format "deck-%s-html" name)))))
-       (browse-url-of-file file)))))
+     (let ((name (alist-get 'name record)))
+       (swamp-present--fetch
+        deck (format "deck-%s-html" name)
+        (lambda (html)
+          (let ((file (swamp-present--output-file deck name "html")))
+            (swamp-present--write file html)
+            (browse-url-of-file file))))))))
 
 ;;;###autoload
-(defun swamp-present-pdf ()
-  "Build the deck in the current buffer, print it to PDF and open the PDF."
-  (interactive)
+(defun swamp-present-pdf (&optional self-contained)
+  "Build the deck in the current buffer, print it to PDF and open the PDF.
+With prefix argument SELF-CONTAINED, build and print a deck that works
+offline; without it, printing loads reveal.js from the CDN."
+  (interactive "P")
   (swamp-present--build
-   nil
+   self-contained
    (lambda (deck record)
-     (let ((name (alist-get 'name record)))
-       (message "Printing %s..." name)
-       ;; Name the deck the build just wrote, not the source: export_pdf
-       ;; takes one or the other.
-       (swamp-present--run
-        (list "model" "method" "run" deck "export_pdf"
-              "--input" (concat "name=" name) "--json")
-        (lambda (result)
-          (let* ((pdf (swamp-present--record result))
-                 (encoded (swamp-present--fetch
-                           deck (format "deck-%s-pdf" name)))
-                 (file (swamp-present--write
-                        (swamp-present--output-file name "pdf")
-                        (base64-decode-string encoded))))
-            (message "%s: %d pages%s" name
-                     (alist-get 'pages (alist-get 'pdf pdf))
-                     (if (eq (alist-get 'unchanged pdf) t)
-                         " (unchanged)" ""))
-            (find-file-other-window file))))))))
+     (swamp-present--print deck (alist-get 'name record)))))
 
 (defun swamp-present--outline-rows (record)
   "Return tabulated-list rows for the slides in outline RECORD."
@@ -323,6 +402,19 @@ that do not exist."
                               (string-join missing ", "))
                     "")))))))
 
+;;;###autoload
+(defun swamp-present-cancel ()
+  "Stop every swamp command swamp-present started."
+  (interactive)
+  (let ((n 0))
+    (dolist (p (process-list))
+      (when (and (string-prefix-p "swamp-present" (process-name p))
+                 (process-live-p p))
+        (process-put p 'stopped 'cancelled)
+        (delete-process p)
+        (setq n (1+ n))))
+    (message "Stopped %d swamp command%s" n (if (= n 1) "" "s"))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Transient menu
 ;;; ---------------------------------------------------------------------------
@@ -335,7 +427,8 @@ that do not exist."
     ("p" "preview" swamp-present-preview)
     ("P" "PDF"     swamp-present-pdf)]
    ["Source"
-    ("o" "outline" swamp-present-outline)]])
+    ("o" "outline" swamp-present-outline)
+    ("k" "cancel"  swamp-present-cancel)]])
 
 (transient-append-suffix 'swamp-dispatch "d"
   '("p" "present" swamp-present-dispatch))

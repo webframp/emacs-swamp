@@ -36,7 +36,7 @@ An Emacs transient interface for the [swamp](https://github.com/systeminit/swamp
 (use-package swamp
   :straight (:host github :repo "webframp/emacs-swamp"
              :files ("swamp.el" "swamp-present.el")))
-(use-package swamp-present :after swamp)
+(use-package swamp-present :straight nil :after swamp)
 ```
 
 Leave `swamp-present.el` out of `:files` if you do not build presentations.
@@ -115,20 +115,28 @@ swamp model create @webframp/presentation/deck talks
 |---|---|---|
 | `swamp-present-build` | `b` | Build the deck; with `C-u`, self-contained |
 | `swamp-present-preview` | `p` | Build it and open it in a browser; with `C-u`, self-contained |
-| `swamp-present-pdf` | `P` | Build it, print it to PDF, and open the PDF |
+| `swamp-present-pdf` | `P` | Build it, print it to PDF, and open the PDF; with `C-u`, self-contained, so printing needs no network |
 | `swamp-present-outline` | `o` | List slides, words of speaker notes and images, without building |
+| `swamp-present-cancel` | `k` | Stop the swamp commands swamp-present started |
 
 The buffer is saved first if you agree. Builds run in the background, and
 the echo area reports the slide count and any warnings, which collect in
-`*swamp-present*`.
+`*swamp-present*` along with swamp's error output. A command still running
+after `swamp-present-timeout` seconds (default 600; nil for never) is
+stopped.
 
 - `swamp-present-deck` (default `"talks"`) names the deck model instance.
   An Org buffer can name another with `#+SWAMP_DECK: conference`.
 - `swamp-present-name` sets the deck's name for one buffer, as a file-local
   variable, when two sources share a file name.
-- `swamp-present-output-directory` (default: the temporary directory) is where
-  previews are written, as `swamp-present-<name>.html` and `.pdf`. Each preview
-  overwrites the last, so a browser tab only needs reloading.
+- `swamp-present-output-directory` is where previews are written, as
+  `swamp-present-<instance>-<name>.html` and `.pdf`. The default is
+  `swamp-present/` under `user-emacs-directory`, created readable by you alone.
+  Each preview overwrites the last, so a browser tab only needs reloading, and
+  an open PDF buffer is refreshed in place.
+- `swamp-present-deck`, `#+SWAMP_DECK:` and `swamp-present-name` must be plain
+  names (letters, digits, `.`, `_`, `-`; deck names lowercase, at most 63
+  characters); anything else is refused before swamp runs.
 
 Doom Emacs keybindings, for example (repeat with `:after markdown-mode` and
 `:map markdown-mode-map` for Markdown):
@@ -170,6 +178,8 @@ Doom Emacs keybindings, for example (repeat with `:after markdown-mode` and
 | `*swamp-extensions*` | `tabulated-list-mode` | — |
 | `*swamp-data*` | `tabulated-list-mode` | — |
 | `*swamp-summary*` | `tabulated-list-mode` | — |
+| `*swamp-outline:<name>*` | `tabulated-list-mode` | Slides of a deck, from `swamp-present-outline` |
+| `*swamp-present*` | `fundamental-mode` | swamp-present's build warnings and swamp's error output |
 
 ## Running tests
 
