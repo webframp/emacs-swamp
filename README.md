@@ -10,6 +10,8 @@ An Emacs transient interface for the [swamp](https://github.com/systeminit/swamp
 - Status values (`succeeded`, `failed`, `running`) are highlighted with distinct faces
 - `swamp-jump-to-last-result` jumps back to the most recent result buffer
 - `swamp-repo-dir` customizable for per-project repo targeting
+- `swamp-present` builds, previews, outlines and prints reveal.js decks from
+  Org or Markdown buffers through the `@webframp/presentation` extension
 
 ## Requirements
 
@@ -25,15 +27,19 @@ An Emacs transient interface for the [swamp](https://github.com/systeminit/swamp
 (package! swamp
   :recipe (:host github
            :repo "webframp/emacs-swamp"
-           :files ("swamp.el")))
+           :files ("swamp.el" "swamp-present.el")))
 ```
 
 ### use-package + straight.el
 
 ```elisp
 (use-package swamp
-  :straight (:host github :repo "webframp/emacs-swamp" :files ("swamp.el")))
+  :straight (:host github :repo "webframp/emacs-swamp"
+             :files ("swamp.el" "swamp-present.el")))
+(use-package swamp-present :after swamp)
 ```
+
+Leave `swamp-present.el` out of `:files` if you do not build presentations.
 
 ## Usage
 
@@ -45,9 +51,11 @@ Swamp AI-native automation
 Models                   Workflows
 m  Model                 w  Workflow
 d  data query            e  Extension
-                         S  summarize
+p  present               S  summarize
                          b  last result
 ```
+
+`p` appears once `swamp-present` is loaded.
 
 ### Keybinding example
 
@@ -90,6 +98,52 @@ All commands are also callable directly:
 | `swamp-summarize` | Show recent activity summary |
 | `swamp-jump-to-last-result` | Jump to the most recently opened result buffer |
 
+## Presentations
+
+`swamp-present` builds the Org or Markdown deck in the current buffer with
+the [`@webframp/presentation`](https://github.com/webframp/swamp-extensions/tree/main/presentation)
+extension. Each build is stored as versioned swamp data; Emacs only runs
+swamp and opens what it returns. Set the extension up once per swamp
+repository:
+
+```sh
+swamp extension pull @webframp/presentation
+swamp model create @webframp/presentation/deck talks
+```
+
+| Command | Key in `swamp-present-dispatch` | Does |
+|---|---|---|
+| `swamp-present-build` | `b` | Build the deck; with `C-u`, self-contained |
+| `swamp-present-preview` | `p` | Build it and open it in a browser; with `C-u`, self-contained |
+| `swamp-present-pdf` | `P` | Build it, print it to PDF, and open the PDF |
+| `swamp-present-outline` | `o` | List slides, words of speaker notes and images, without building |
+
+The buffer is saved first if you agree. Builds run in the background, and
+the echo area reports the slide count and any warnings, which collect in
+`*swamp-present*`.
+
+- `swamp-present-deck` (default `"talks"`) names the deck model instance.
+  An Org buffer can name another with `#+SWAMP_DECK: conference`.
+- `swamp-present-name` sets the deck's name for one buffer, as a file-local
+  variable, when two sources share a file name.
+- `swamp-present-output-directory` (default: the temporary directory) is where
+  previews are written, as `swamp-present-<name>.html` and `.pdf`. Each preview
+  overwrites the last, so a browser tab only needs reloading.
+
+Doom Emacs keybindings, for example (repeat with `:after markdown-mode` and
+`:map markdown-mode-map` for Markdown):
+
+```elisp
+(map! :after org
+      :map org-mode-map
+      :localleader
+      (:prefix ("S" . "swamp present")
+       "b" #'swamp-present-build
+       "p" #'swamp-present-preview
+       "P" #'swamp-present-pdf
+       "o" #'swamp-present-outline))
+```
+
 ## Customization
 
 ```elisp
@@ -123,6 +177,11 @@ All commands are also callable directly:
 emacs --batch -l ert \
       -l swamp.el \
       -l test-swamp.el \
+      -f ert-run-tests-batch-and-exit
+
+emacs --batch -l ert -L . \
+      -l swamp-present.el \
+      -l test-swamp-present.el \
       -f ert-run-tests-batch-and-exit
 ```
 
