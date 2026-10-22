@@ -21,6 +21,9 @@
 
 (require 'transient)
 (require 'json)
+(require 'seq)
+
+(declare-function evil-local-set-key "evil-core" (state key def))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Customization
@@ -78,12 +81,21 @@ When nil, swamp uses the current directory."
       (list "--repo-dir" (expand-file-name swamp-repo-dir))
     nil))
 
+(defun swamp--command-args (args)
+  "Return ARGS with the base arguments added where swamp accepts them.
+swamp reads --repo-dir as an option of the subcommand, so it goes after
+the subcommand rather than before it.  Registry-only commands such as
+`extension search' have no repository and reject it."
+  (if (equal (seq-take args 2) '("extension" "search"))
+      args
+    (append args (swamp--base-args))))
+
 (defun swamp--run-json (args)
   "Run swamp with ARGS and --json, return parsed JSON or nil on error.
 ARGS is a list of strings.  The exit code determines success; JSON parse
 errors are swallowed and return nil."
   (with-temp-buffer
-    (let* ((full-args (append (swamp--base-args) args (list "--json")))
+    (let* ((full-args (append (swamp--command-args args) (list "--json")))
            (exit (apply #'call-process swamp-executable nil t nil full-args)))
       (when (= exit 0)
         (goto-char (point-min))
@@ -94,9 +106,10 @@ errors are swallowed and return nil."
 (defun swamp--run-json-stream (args)
   "Run swamp with ARGS and --json, return a list of all parsed JSON objects.
 Some swamp commands emit multiple newline-delimited JSON objects.
-Returns a list (possibly empty) of parsed objects; never signals on parse errors."
+Returns a list (possibly empty) of parsed objects; never signals on parse
+errors."
   (with-temp-buffer
-    (let ((full-args (append (swamp--base-args) args (list "--json"))))
+    (let ((full-args (append (swamp--command-args args) (list "--json"))))
       (apply #'call-process swamp-executable nil t nil full-args))
     (goto-char (point-min))
     (let (objects)
