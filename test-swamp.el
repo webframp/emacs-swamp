@@ -248,6 +248,24 @@
       (should (member "--repo-dir" args))
       (should (member "/tmp/test-repo" args)))))
 
+(ert-deftest swamp-command-args-puts-repo-dir-after-subcommand ()
+  "--repo-dir follows the subcommand; swamp rejects it in front."
+  (let ((swamp-repo-dir "/tmp/test-repo"))
+    (should (equal (swamp--command-args '("model" "get" "x"))
+                   '("model" "get" "x" "--repo-dir" "/tmp/test-repo")))))
+
+(ert-deftest swamp-command-args-omits-repo-dir-for-registry-search ()
+  "extension search has no repository and rejects --repo-dir."
+  (let ((swamp-repo-dir "/tmp/test-repo"))
+    (should (equal (swamp--command-args '("extension" "search" "aws"))
+                   '("extension" "search" "aws")))))
+
+(ert-deftest swamp-command-args-unchanged-without-repo-dir ()
+  "Without swamp-repo-dir the arguments pass through untouched."
+  (let ((swamp-repo-dir nil))
+    (should (equal (swamp--command-args '("model" "search"))
+                   '("model" "search")))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; 12. Faces are defined
 ;;; ---------------------------------------------------------------------------
