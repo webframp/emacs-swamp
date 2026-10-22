@@ -312,7 +312,7 @@ the name is the one the build just recorded."
    (lambda (result)
      (let ((pdf (swamp-present--record result)))
        (swamp-present--fetch
-        deck (format "deck-%s-pdf" name)
+        deck (format "pdf-%s" name)
         (lambda (encoded)
           (let* ((file (swamp-present--output-file deck name "pdf"))
                  (buf (swamp-present--write
@@ -344,7 +344,7 @@ With prefix argument SELF-CONTAINED, build a deck that works offline."
    (lambda (deck record)
      (let ((name (alist-get 'name record)))
        (swamp-present--fetch
-        deck (format "deck-%s-html" name)
+        deck (format "html-%s" name)
         (lambda (html)
           (let ((file (swamp-present--output-file deck name "html")))
             (swamp-present--write file html)

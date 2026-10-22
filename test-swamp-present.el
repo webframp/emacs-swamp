@@ -96,7 +96,7 @@ Output files go to a scratch directory, bound in
 
 (defun swamp-present-test--build-json (name &optional self-contained unchanged)
   "Return build JSON for deck NAME."
-  (format "{\"status\":\"succeeded\",\"dataArtifacts\":[{\"name\":\"deck-%s-html\"},{\"name\":\"deck-%s\",\"attributes\":{\"name\":\"%s\",\"slideCount\":4,\"warnings\":[],\"unchanged\":%s,\"reveal\":{\"selfContained\":%s}}}]}"
+  (format "{\"status\":\"succeeded\",\"dataArtifacts\":[{\"name\":\"html-%s\"},{\"name\":\"deck-%s\",\"attributes\":{\"name\":\"%s\",\"slideCount\":4,\"warnings\":[],\"unchanged\":%s,\"reveal\":{\"selfContained\":%s}}}]}"
           name name name (if unchanged "true" "false")
           (if self-contained "true" "false")))
 
@@ -164,7 +164,7 @@ Output files go to a scratch directory, bound in
 
 (ert-deftest swamp-present-record-is-the-artifact-with-attributes ()
   "The method's resource is the data artifact that carries attributes."
-  (let ((result '((dataArtifacts . (((name . "deck-t-html"))
+  (let ((result '((dataArtifacts . (((name . "html-t"))
                                     ((name . "deck-t")
                                      (attributes . ((name . "t")))))))))
     (should (equal (swamp-present--record result) '((name . "t"))))))
@@ -266,13 +266,13 @@ Output files go to a scratch directory, bound in
   (swamp-present-test--with-fake-swamp
       '(("*" "<html>d\303\251ck</html>\n\n" 0))
     (let (got)
-      (swamp-present--fetch "talks" "deck-t-html" (lambda (c) (setq got c)))
+      (swamp-present--fetch "talks" "html-t" (lambda (c) (setq got c)))
       (swamp-present-test--wait)
       (should (equal got "<html>d\303\251ck</html>\n"))
       (should-not (multibyte-string-p got))
       (should (equal (swamp-present-test--calls)
                      '(("data" "query"
-                        "model(\"talks\") && name == \"deck-t-html\""
+                        "model(\"talks\") && name == \"html-t\""
                         "--select" "content")))))))
 
 (ert-deftest swamp-present-fetch-reports-empty-content ()
@@ -280,10 +280,10 @@ Output files go to a scratch directory, bound in
   (swamp-present-test--with-fake-swamp '(("*" "\n" 0))
     (let (called)
       (should (equal (swamp-present-test--capturing-messages
-                      (swamp-present--fetch "talks" "deck-t-pdf"
+                      (swamp-present--fetch "talks" "pdf-t"
                                             (lambda (_) (setq called t)))
                       (swamp-present-test--wait))
-                     '("swamp: talks has no deck-t-pdf yet")))
+                     '("swamp: talks has no pdf-t yet")))
       (should-not called))))
 
 ;;; ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ Output files go to a scratch directory, bound in
   "Preview builds, fetches the deck's HTML and opens the written file."
   (swamp-present-test--with-fake-swamp
       `(("*build*" ,(swamp-present-test--build-json "talk") 0)
-        ("*deck-talk-html*" "<html>deck</html>\n" 0))
+        ("*html-talk*" "<html>deck</html>\n" 0))
     (let (opened)
       (cl-letf (((symbol-function 'browse-url-of-file)
                  (lambda (f) (setq opened f))))
@@ -325,8 +325,8 @@ Output files go to a scratch directory, bound in
   "PDF builds as asked, then prints the recorded deck name, not the source."
   (swamp-present-test--with-fake-swamp
       `(("*build*" ,(swamp-present-test--build-json "talk-web" t) 0)
-        ("*export_pdf*" "{\"status\":\"succeeded\",\"dataArtifacts\":[{\"name\":\"pdf-talk-web\",\"attributes\":{\"pdf\":{\"pages\":5},\"unchanged\":false}}]}" 0)
-        ("*deck-talk-web-pdf*" ,(concat (base64-encode-string "%PDF-1.7\n\377") "\n") 0))
+        ("*export_pdf*" "{\"status\":\"succeeded\",\"dataArtifacts\":[{\"name\":\"print-talk-web\",\"attributes\":{\"pdf\":{\"pages\":5},\"unchanged\":false}}]}" 0)
+        ("*pdf-talk-web*" ,(concat (base64-encode-string "%PDF-1.7\n\377") "\n") 0))
     (swamp-present-test--in-deck
      (setq-local swamp-present-name "talk-web")
      (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
